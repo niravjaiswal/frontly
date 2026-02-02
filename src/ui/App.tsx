@@ -11,7 +11,8 @@ import { Chat } from './Chat.js';
 import { Input } from './Input.js';
 import { sendMessage, parseResponse } from '../gemini/client.js';
 import { applyPlan } from '../fs/writer.js';
-import type { ChatMessage, RepoContext, DiffHistory, ExecutionPlan } from '../types.js';
+import { formatValidationErrors } from '../fs/validator.js';
+import type { ChatMessage, RepoContext, DiffHistory, ExecutionPlan, ValidationResult } from '../types.js';
 
 interface AppProps {
   repoContext: RepoContext;
@@ -19,7 +20,7 @@ interface AppProps {
   debug: boolean;
 }
 
-type AppMode = 'chat' | 'confirm' | 'applying';
+type AppMode = 'chat' | 'confirm' | 'applying' | 'validation_failed';
 
 export function App({ repoContext, repoSummary, debug }: AppProps) {
   const { exit } = useApp();
@@ -30,21 +31,32 @@ export function App({ repoContext, repoSummary, debug }: AppProps) {
   const [pendingPlan, setPendingPlan] = useState<ExecutionPlan | null>(null);
   const [mode, setMode] = useState<AppMode>('chat');
   const [error, setError] = useState<string | null>(null);
+  const [validationResults, setValidationResults] = useState<ValidationResult[]>([]);
 
   // Handle keyboard input for confirmation mode
   useInput(
     (input, key) => {
       if (mode === 'confirm' && pendingPlan) {
         if (input.toLowerCase() === 'y') {
-          handleApplyPlan();
+          handleApplyPlan(false);
         } else if (input.toLowerCase() === 'n' || key.escape) {
           setPendingPlan(null);
           setMode('chat');
           addMessage('assistant', 'Plan cancelled. What would you like to do instead?');
         }
+      } else if (mode === 'validation_failed' && pendingPlan) {
+        if (input.toLowerCase() === 'y') {
+          // User wants to apply despite validation errors
+          handleApplyPlan(true);
+        } else if (input.toLowerCase() === 'n' || key.escape) {
+          setPendingPlan(null);
+          setValidationResults([]);
+          setMode('chat');
+          addMessage('assistant', 'Changes cancelled due to validation errors. What would you like to do instead?');
+        }
       }
     },
-    { isActive: mode === 'confirm' }
+    { isActive: mode === 'confirm' || mode === 'validation_failed' }
   );
 
   const addMessage = useCallback((role: ChatMessage['role'], content: string) => {
@@ -54,30 +66,55 @@ export function App({ repoContext, repoSummary, debug }: AppProps) {
     ]);
   }, []);
 
-  const handleApplyPlan = async () => {
+  const handleApplyPlan = async (skipValidation: boolean = false) => {
     if (!pendingPlan) return;
 
     setMode('applying');
     try {
-      const diff = await applyPlan(pendingPlan, repoContext.rootPath, async (filePath) => {
-        // Request file content from Gemini for each file
-        const contentResponse = await sendMessage(
-          `Generate the exact content for file: ${filePath}\n\nRespond with ONLY the file content, no explanations or markdown code blocks.`,
-          messages,
-          repoSummary
-        );
-        return contentResponse.text;
-      });
+      const result = await applyPlan(
+        pendingPlan,
+        repoContext.rootPath,
+        async (filePath) => {
+          // Request file content from Gemini for each file
+          const contentResponse = await sendMessage(
+            `Generate the exact content for file: ${filePath}\n\nRespond with ONLY the file content, no explanations or markdown code blocks.`,
+            messages,
+            repoSummary
+          );
+          return contentResponse.text;
+        },
+        { skipValidation }
+      );
 
-      setLastDiff(diff);
+      if (result.hasValidationErrors && !skipValidation) {
+        // Validation failed - show errors and ask user if they want to proceed
+        setValidationResults(result.validationResults);
+        setMode('validation_failed');
+        const errorSummary = formatValidationErrors(result.validationResults);
+        addMessage(
+          'system',
+          `⚠️ **Validation Errors Found**\n${errorSummary}\n\nThe generated code has syntax or type errors.`
+        );
+        return;
+      }
+
+      // Success - files were written
+      setLastDiff(result.diffHistory);
+      setValidationResults([]);
+
+      const validationSummary = result.validationResults.length > 0
+        ? `\n✓ All ${result.validationResults.length} file(s) passed validation`
+        : '';
+
       addMessage(
         'assistant',
-        `✓ Applied changes:\n${diff.diffs.map((d) => `  ${d.operation}: ${d.path}`).join('\n')}`
+        `✓ Applied changes:\n${result.diffHistory.diffs.map((d) => `  ${d.operation}: ${d.path}`).join('\n')}${validationSummary}`
       );
+      setPendingPlan(null);
+      setMode('chat');
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : 'Unknown error';
       addMessage('assistant', `✗ Failed to apply changes: ${errorMessage}`);
-    } finally {
       setPendingPlan(null);
       setMode('chat');
     }
@@ -163,6 +200,13 @@ export function App({ repoContext, repoSummary, debug }: AppProps) {
       {mode === 'confirm' && pendingPlan && (
         <Box marginTop={1} paddingX={1}>
           <Text color="yellow">Apply these changes? (y/n): </Text>
+        </Box>
+      )}
+
+      {/* Validation failed prompt */}
+      {mode === 'validation_failed' && pendingPlan && (
+        <Box marginTop={1} paddingX={1}>
+          <Text color="red">Apply changes despite validation errors? (y/n): </Text>
         </Box>
       )}
 
