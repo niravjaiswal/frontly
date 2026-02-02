@@ -9,31 +9,40 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import { createFileDiff } from './diff.js';
 import { requestFileContent } from '../gemini/client.js';
-import type { ExecutionPlan, DiffHistory, FileDiff, ChatMessage } from '../types.js';
+import { validateCode, formatValidationErrors } from './validator.js';
+import type { ExecutionPlan, DiffHistory, FileDiff, ChatMessage, ApplyPlanResult, ValidationResult } from '../types.js';
 
 /**
  * Applies an execution plan by creating, modifying, and deleting files
- * Returns a DiffHistory object for tracking changes
+ * Validates code before writing and returns validation results
  */
 export async function applyPlan(
   plan: ExecutionPlan,
   rootPath: string,
-  getFileContent: (filePath: string) => Promise<string>
-): Promise<DiffHistory> {
+  getFileContent: (filePath: string) => Promise<string>,
+  options: { skipValidation?: boolean } = {}
+): Promise<ApplyPlanResult> {
   const diffs: FileDiff[] = [];
+  const validationResults: ValidationResult[] = [];
+  const pendingWrites: { fullPath: string; content: string; diff: FileDiff }[] = [];
 
+  // Collect all file contents and validate before writing
   // Create new files
   for (const file of plan.files_to_create) {
     const fullPath = path.join(rootPath, file.path);
     const content = await getFileContent(file.path);
 
-    // Ensure directory exists
-    await fs.mkdir(path.dirname(fullPath), { recursive: true });
+    // Validate the content
+    if (!options.skipValidation) {
+      const validation = validateCode(file.path, content);
+      validationResults.push(validation);
+    }
 
-    // Write the file
-    await fs.writeFile(fullPath, content, 'utf-8');
-
-    diffs.push(createFileDiff(file.path, 'create', null, content));
+    pendingWrites.push({
+      fullPath,
+      content,
+      diff: createFileDiff(file.path, 'create', null, content),
+    });
   }
 
   // Modify existing files
@@ -41,29 +50,55 @@ export async function applyPlan(
     const fullPath = path.join(rootPath, file.path);
 
     // Read existing content
-    let existingContent: string;
+    let existingContent: string | null = null;
     try {
       existingContent = await fs.readFile(fullPath, 'utf-8');
     } catch {
       // File doesn't exist, treat as create
-      const content = await getFileContent(file.path);
-      await fs.mkdir(path.dirname(fullPath), { recursive: true });
-      await fs.writeFile(fullPath, content, 'utf-8');
-      diffs.push(createFileDiff(file.path, 'create', null, content));
-      continue;
     }
 
     // Get new content
     const newContent = await getFileContent(file.path);
 
+    // Validate the content
+    if (!options.skipValidation) {
+      const validation = validateCode(file.path, newContent);
+      validationResults.push(validation);
+    }
+
     // Only write if content is different
     if (newContent !== existingContent) {
-      await fs.writeFile(fullPath, newContent, 'utf-8');
-      diffs.push(createFileDiff(file.path, 'modify', existingContent, newContent));
+      const operation = existingContent === null ? 'create' : 'modify';
+      pendingWrites.push({
+        fullPath,
+        content: newContent,
+        diff: createFileDiff(file.path, operation, existingContent, newContent),
+      });
     }
   }
 
-  // Delete files
+  // Check if there are validation errors
+  const hasValidationErrors = validationResults.some(
+    (r) => !r.isValid
+  );
+
+  // If validation failed and we're not skipping, return early with results
+  if (hasValidationErrors && !options.skipValidation) {
+    return {
+      diffHistory: { timestamp: new Date(), diffs: [] },
+      validationResults,
+      hasValidationErrors: true,
+    };
+  }
+
+  // All validations passed (or skipped), write the files
+  for (const write of pendingWrites) {
+    await fs.mkdir(path.dirname(write.fullPath), { recursive: true });
+    await fs.writeFile(write.fullPath, write.content, 'utf-8');
+    diffs.push(write.diff);
+  }
+
+  // Delete files (no validation needed)
   for (const filePath of plan.files_to_delete) {
     const fullPath = path.join(rootPath, filePath);
 
@@ -78,8 +113,9 @@ export async function applyPlan(
   }
 
   return {
-    timestamp: new Date(),
-    diffs,
+    diffHistory: { timestamp: new Date(), diffs },
+    validationResults,
+    hasValidationErrors: false,
   };
 }
 
