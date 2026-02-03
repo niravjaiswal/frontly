@@ -92,3 +92,23 @@ export interface AppState {
   isLoading: boolean;
   pendingPlan: ExecutionPlan | null;
 }
+
+// Code validation types
+export interface ValidationError {
+  line: number;
+  column: number;
+  message: string;
+  severity: 'error' | 'warning';
+}
+
+export interface ValidationResult {
+  isValid: boolean;
+  errors: ValidationError[];
+  filePath: string;
+}
+
+export interface ApplyPlanResult {
+  diffHistory: DiffHistory;
+  validationResults: ValidationResult[];
+  hasValidationErrors: boolean;
+}
