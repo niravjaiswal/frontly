@@ -94,3 +94,27 @@ export async function listTestPlans(
     .filter((f: string) => f.endsWith('.plan.json'))
     .map((f: string) => f.replace('.plan.json', ''));
 }
+
+/**
+ * Check if a test plan with the given name already exists on disk.
+ */
+export async function planExists(
+  planName: string,
+  cwd: string = process.cwd()
+): Promise<boolean> {
+  return pathExists(planFilePath(planName, cwd));
+}
+
+/**
+ * Save a TestPlan to disk.
+ * Returns the absolute path to the written file.
+ */
+export async function saveTestPlan(
+  plan: TestPlan,
+  cwd: string = process.cwd()
+): Promise<string> {
+  const filePath = planFilePath(plan.name, cwd);
+  await ensureDir(getPlansDir(cwd));
+  await writeJson(filePath, plan, { spaces: 2 });
+  return filePath;
+}

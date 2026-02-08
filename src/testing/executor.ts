@@ -14,6 +14,8 @@ import { createRunDir } from './persistence.js';
 
 const PAGE_LOAD_TIMEOUT_MS = 30_000;
 const POST_NAVIGATE_WAIT_MS = 1_000;
+const INTERACTION_TIMEOUT_MS = 10_000;
+const POST_INTERACTION_WAIT_MS = 500;
 
 /**
  * Execute a navigate step: go to baseUrl + step.url.
@@ -93,6 +95,64 @@ async function executeAssertRoute(
 }
 
 /**
+ * Execute a click step: locate element by selector and click it.
+ * Uses standard Playwright locator — no LLM involved.
+ */
+async function executeClick(
+  session: BrowserSession,
+  step: { type: 'click'; selector: string; description: string }
+): Promise<StepResult> {
+  const startTime = Date.now();
+  try {
+    await session.page.locator(step.selector).click({ timeout: INTERACTION_TIMEOUT_MS });
+    await session.page.waitForTimeout(POST_INTERACTION_WAIT_MS);
+    return {
+      stepIndex: -1,
+      step,
+      status: 'passed',
+      durationMs: Date.now() - startTime,
+    };
+  } catch (error) {
+    return {
+      stepIndex: -1,
+      step,
+      status: 'failed',
+      error: `Click on "${step.selector}" failed: ${(error as Error).message}`,
+      durationMs: Date.now() - startTime,
+    };
+  }
+}
+
+/**
+ * Execute a fill step: locate element by selector and fill with value.
+ * Uses standard Playwright locator — no LLM involved.
+ */
+async function executeFill(
+  session: BrowserSession,
+  step: { type: 'fill'; selector: string; value: string; description: string }
+): Promise<StepResult> {
+  const startTime = Date.now();
+  try {
+    await session.page.locator(step.selector).fill(step.value, { timeout: INTERACTION_TIMEOUT_MS });
+    await session.page.waitForTimeout(POST_INTERACTION_WAIT_MS);
+    return {
+      stepIndex: -1,
+      step,
+      status: 'passed',
+      durationMs: Date.now() - startTime,
+    };
+  } catch (error) {
+    return {
+      stepIndex: -1,
+      step,
+      status: 'failed',
+      error: `Fill on "${step.selector}" failed: ${(error as Error).message}`,
+      durationMs: Date.now() - startTime,
+    };
+  }
+}
+
+/**
  * Execute a single test step.
  */
 async function executeStep(
@@ -105,6 +165,10 @@ async function executeStep(
       return executeNavigate(session, step, baseUrl);
     case 'assertRoute':
       return executeAssertRoute(session, step);
+    case 'click':
+      return executeClick(session, step);
+    case 'fill':
+      return executeFill(session, step);
   }
 }
 

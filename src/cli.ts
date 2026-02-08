@@ -13,6 +13,7 @@ import { App } from './ui/App.js';
 import { scanRepository } from './repo/scanner.js';
 import { createRepoSummary } from './repo/summarizer.js';
 import { testCommand } from './commands/test.js';
+import { discoverCommand } from './commands/discover.js';
 import chalk from 'chalk';
 
 const program = new Command();
@@ -78,6 +79,18 @@ program
     if (result) {
       process.exit(result.status === 'passed' ? 0 : 1);
     } else {
+      process.exit(1);
+    }
+  });
+
+program
+  .command('discover <intent>')
+  .description('Explore the app with AI and generate a test plan')
+  .action(async (intent: string) => {
+    try {
+      await discoverCommand(intent);
+    } catch (error) {
+      console.error(chalk.red(`\n  ${(error as Error).message}\n`));
       process.exit(1);
     }
   });

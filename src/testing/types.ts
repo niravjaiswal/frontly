@@ -2,7 +2,9 @@ import type { ConsoleMessage, UncaughtError } from '../browser/types.js';
 
 export type TestStep =
   | { type: 'navigate'; url: string }
-  | { type: 'assertRoute'; path: string };
+  | { type: 'assertRoute'; path: string }
+  | { type: 'click'; selector: string; description: string }
+  | { type: 'fill'; selector: string; value: string; description: string };
 
 export type VisualCheckpoint = {
   name: string;
