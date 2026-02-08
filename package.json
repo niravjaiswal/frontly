@@ -25,10 +25,13 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
+    "@browserbasehq/stagehand": "^1.0.0",
     "@google/generative-ai": "^0.21.0",
     "chalk": "^5.3.0",
     "commander": "^12.1.0",
     "diff": "^5.2.0",
+    "execa": "^9.5.2",
+    "fs-extra": "^11.2.0",
     "ink": "^5.0.1",
     "ink-markdown": "^1.0.2",
     "ink-text-input": "^6.0.0",
@@ -37,6 +40,7 @@
   },
   "devDependencies": {
     "@types/diff": "^5.2.1",
+    "@types/fs-extra": "^11.0.4",
     "@types/node": "^22.10.0",
     "@types/react": "^18.3.12"
   },

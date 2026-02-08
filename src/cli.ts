@@ -12,6 +12,7 @@ import React from 'react';
 import { App } from './ui/App.js';
 import { scanRepository } from './repo/scanner.js';
 import { createRepoSummary } from './repo/summarizer.js';
+import { testCommand } from './commands/test.js';
 import chalk from 'chalk';
 
 const program = new Command();
@@ -65,6 +66,20 @@ program
 
     await waitUntilExit();
     console.log(chalk.dim('\n  Goodbye!\n'));
+  });
+
+program
+  .command('test')
+  .description('Run a test plan against the production build')
+  .option('-p, --plan <name>', 'Test plan to run', 'smoke')
+  .action(async (options: { plan: string }) => {
+    const result = await testCommand(options.plan);
+
+    if (result) {
+      process.exit(result.status === 'passed' ? 0 : 1);
+    } else {
+      process.exit(1);
+    }
   });
 
 program.parse();
