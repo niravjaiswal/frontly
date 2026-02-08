@@ -50,4 +50,10 @@ export async function persistRunResult(
   await writeJson(join(runDir, 'errors.json'), result.uncaughtErrors, {
     spaces: 2,
   });
+
+  if (result.visualAssertionResults.length > 0) {
+    await writeJson(join(runDir, 'visual-assertions.json'), result.visualAssertionResults, {
+      spaces: 2,
+    });
+  }
 }

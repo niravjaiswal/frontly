@@ -16,6 +16,20 @@ export type TestPlan = {
   intent: string;
   steps: TestStep[];
   visualCheckpoints: VisualCheckpoint[];
+  visualAssertions?: VisualAssertion[];
+};
+
+export type VisualAssertion =
+  | { type: 'elementVisible'; selector: string; description?: string }
+  | { type: 'elementInViewport'; selector: string; description?: string }
+  | { type: 'elementNotOverlapped'; selector: string; description?: string }
+  | { type: 'minSize'; selector: string; minWidth: number; minHeight: number; description?: string }
+  | { type: 'noHorizontalOverflow'; description?: string };
+
+export type VisualAssertionResult = {
+  assertion: VisualAssertion;
+  status: 'passed' | 'failed';
+  message: string;
 };
 
 export type StepResult = {
@@ -39,6 +53,7 @@ export type TestRunResult = {
   status: 'passed' | 'failed';
   steps: StepResult[];
   checkpoints: CheckpointArtifact[];
+  visualAssertionResults: VisualAssertionResult[];
   consoleMessages: ConsoleMessage[];
   uncaughtErrors: UncaughtError[];
   durationMs: number;

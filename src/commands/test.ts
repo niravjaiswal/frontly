@@ -42,7 +42,8 @@ export async function testCommand(planName?: string): Promise<TestRunResult | nu
 
   console.log(chalk.dim(`  Plan: ${plan.name}`));
   console.log(chalk.dim(`  Intent: "${plan.intent}"`));
-  console.log(chalk.dim(`  Steps: ${plan.steps.length}, Checkpoints: ${plan.visualCheckpoints.length}\n`));
+  const assertionCount = plan.visualAssertions?.length ?? 0;
+  console.log(chalk.dim(`  Steps: ${plan.steps.length}, Checkpoints: ${plan.visualCheckpoints.length}, Assertions: ${assertionCount}\n`));
 
   // Step 2: Detect project
   console.log(chalk.dim('  Detecting project type...'));
@@ -102,6 +103,19 @@ export async function testCommand(planName?: string): Promise<TestRunResult | nu
       for (const step of result.steps) {
         if (step.status === 'failed') {
           console.log(chalk.red(`    Step ${step.stepIndex}: ${step.error}`));
+        }
+      }
+    }
+
+    // Print visual assertion summary
+    if (result.visualAssertionResults.length > 0) {
+      const passed = result.visualAssertionResults.filter(r => r.status === 'passed').length;
+      const failed = result.visualAssertionResults.filter(r => r.status === 'failed').length;
+      console.log(chalk.dim(`  Visual assertions: ${passed} passed, ${failed} failed`));
+      for (const ar of result.visualAssertionResults) {
+        if (ar.status === 'failed') {
+          const label = ar.assertion.description || ar.assertion.type;
+          console.log(chalk.red(`    ${label}: ${ar.message}`));
         }
       }
     }

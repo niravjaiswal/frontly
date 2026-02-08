@@ -9,8 +9,10 @@ import type {
   CheckpointArtifact,
   TestRunResult,
   VisualCheckpoint,
+  VisualAssertionResult,
 } from './types.js';
 import { createRunDir } from './persistence.js';
+import { executeVisualAssertions } from './visual-assertions.js';
 
 const PAGE_LOAD_TIMEOUT_MS = 30_000;
 const POST_NAVIGATE_WAIT_MS = 1_000;
@@ -267,21 +269,31 @@ export async function executeTestPlan(
       }
     }
 
+    // Execute visual assertions after all steps
+    const assertionResults: VisualAssertionResult[] = [];
+    if (plan.visualAssertions && plan.visualAssertions.length > 0) {
+      const results = await executeVisualAssertions(session.page, plan.visualAssertions);
+      assertionResults.push(...results);
+    }
+
     const anyStepFailed = stepResults.some((r) => r.status === 'failed');
+    const anyAssertionFailed = assertionResults.some((r) => r.status === 'failed');
     const hasUncaughtErrors = session.uncaughtErrors.length > 0;
 
     return {
       plan: plan.name,
       intent: plan.intent,
       timestamp: new Date().toISOString().slice(0, 19).replace(/:/g, '-'),
-      status: anyStepFailed || hasUncaughtErrors ? 'failed' : 'passed',
+      status: anyStepFailed || anyAssertionFailed || hasUncaughtErrors ? 'failed' : 'passed',
       steps: stepResults,
       checkpoints: checkpointArtifacts,
+      visualAssertionResults: assertionResults,
       consoleMessages: session.consoleMessages,
       uncaughtErrors: session.uncaughtErrors,
       durationMs: Date.now() - runStartTime,
       ...(hasUncaughtErrors &&
-        !anyStepFailed && {
+        !anyStepFailed &&
+        !anyAssertionFailed && {
           error: `${session.uncaughtErrors.length} uncaught error(s) detected`,
         }),
     };
@@ -294,6 +306,7 @@ export async function executeTestPlan(
       status: 'failed',
       steps: stepResults,
       checkpoints: checkpointArtifacts,
+      visualAssertionResults: [],
       consoleMessages: session?.consoleMessages ?? [],
       uncaughtErrors: session?.uncaughtErrors ?? [],
       durationMs: Date.now() - runStartTime,
