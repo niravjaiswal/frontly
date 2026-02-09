@@ -7,12 +7,16 @@
  */
 
 import { type ExecaError } from 'execa';
+import pkg from 'fs-extra';
+const { readJson, pathExists, writeJson } = pkg;
 import { join } from 'node:path';
 import chalk from 'chalk';
 import { ensureDefaultPlan, loadTestPlan } from '../testing/plans.js';
 import { executeTestPlan } from '../testing/executor.js';
 import { persistRunResult } from '../testing/persistence.js';
 import { loadBaseline, saveBaseline } from '../testing/baselines.js';
+import { compareRuns } from '../testing/compare.js';
+import type { RunComparison } from '../testing/compare.js';
 import type { TestRunResult } from '../testing/types.js';
 import { detectProject, runBuild, startPreviewServer, PREVIEW_PORT } from './shared.js';
 
@@ -102,6 +106,55 @@ export async function testCommand(planName?: string, accept?: boolean): Promise<
       result.timestamp
     );
     await persistRunResult(result, runDir);
+
+    // Baseline comparison
+    if (existingBaseline) {
+      const baselineRunDir = join(cwd, '.frontly/runs', plan.name, existingBaseline.runTimestamp);
+      const baselineMetaPath = join(baselineRunDir, 'meta.json');
+      if (await pathExists(baselineMetaPath)) {
+        const baselineResult = await readJson(baselineMetaPath) as TestRunResult;
+        const comparison: RunComparison = compareRuns(baselineResult, result);
+
+        if (comparison.status === 'regressed') {
+          console.log(chalk.red(`\n  ❌ Regressions detected vs baseline (${existingBaseline.runTimestamp})`));
+
+          if (comparison.stepRegressions.length > 0) {
+            console.log(chalk.red('\n  Step regressions:'));
+            for (const reg of comparison.stepRegressions) {
+              const desc = reg.description ? reg.description : `Step ${reg.stepIndex}`;
+              console.log(chalk.red(`  - Step ${reg.stepIndex}: ${desc}`));
+              console.log(chalk.red('    Previously passed, now failed'));
+              if (reg.error) {
+                console.log(chalk.red(`    Error: ${reg.error}`));
+              }
+            }
+          }
+
+          if (comparison.visualAssertionRegressions.length > 0) {
+            console.log(chalk.red('\n  Visual assertion regressions:'));
+            for (const reg of comparison.visualAssertionRegressions) {
+              console.log(chalk.red(`  - ${reg.name}`));
+              console.log(chalk.red('    Previously passed, now failed'));
+            }
+          }
+
+          if (comparison.newConsoleErrors.length > 0) {
+            console.log(chalk.red('\n  New console errors:'));
+            for (const msg of comparison.newConsoleErrors) {
+              console.log(chalk.red(`  - ${msg}`));
+            }
+          }
+
+          await writeJson(join(runDir, 'comparison.json'), comparison, { spaces: 2 });
+        } else {
+          console.log(chalk.dim('\n  No regressions detected vs baseline'));
+        }
+      } else {
+        console.log(chalk.dim('\n  Baseline run not found — skipping comparison'));
+      }
+    } else {
+      console.log(chalk.dim('\n  No baseline — skipping comparison'));
+    }
 
     if (result.status === 'passed') {
       console.log(chalk.green(`\n  Test plan "${plan.name}" passed`));
