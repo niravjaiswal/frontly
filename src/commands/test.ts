@@ -12,6 +12,7 @@ import chalk from 'chalk';
 import { ensureDefaultPlan, loadTestPlan } from '../testing/plans.js';
 import { executeTestPlan } from '../testing/executor.js';
 import { persistRunResult } from '../testing/persistence.js';
+import { loadBaseline, saveBaseline } from '../testing/baselines.js';
 import type { TestRunResult } from '../testing/types.js';
 import { detectProject, runBuild, startPreviewServer, PREVIEW_PORT } from './shared.js';
 
@@ -22,7 +23,7 @@ import { detectProject, runBuild, startPreviewServer, PREVIEW_PORT } from './sha
  * the plan step-by-step using a headless browser.
  * Returns structured test results.
  */
-export async function testCommand(planName?: string): Promise<TestRunResult | null> {
+export async function testCommand(planName?: string, accept?: boolean): Promise<TestRunResult | null> {
   const cwd = process.cwd();
   const resolvedPlanName = planName ?? 'smoke';
 
@@ -43,7 +44,16 @@ export async function testCommand(planName?: string): Promise<TestRunResult | nu
   console.log(chalk.dim(`  Plan: ${plan.name}`));
   console.log(chalk.dim(`  Intent: "${plan.intent}"`));
   const assertionCount = plan.visualAssertions?.length ?? 0;
-  console.log(chalk.dim(`  Steps: ${plan.steps.length}, Checkpoints: ${plan.visualCheckpoints.length}, Assertions: ${assertionCount}\n`));
+  console.log(chalk.dim(`  Steps: ${plan.steps.length}, Checkpoints: ${plan.visualCheckpoints.length}, Assertions: ${assertionCount}`));
+
+  // Display baseline status
+  const existingBaseline = await loadBaseline(resolvedPlanName, cwd);
+  if (existingBaseline) {
+    console.log(chalk.dim(`  Baseline: ${existingBaseline.runTimestamp}`));
+  } else {
+    console.log(chalk.dim('  Baseline: none'));
+  }
+  console.log('');
 
   // Step 2: Detect project
   console.log(chalk.dim('  Detecting project type...'));
@@ -120,7 +130,19 @@ export async function testCommand(planName?: string): Promise<TestRunResult | nu
       }
     }
 
-    console.log(chalk.dim(`  Results: ${runDir}\n`));
+    console.log(chalk.dim(`  Results: ${runDir}`));
+
+    // Handle --accept flag
+    if (accept) {
+      if (result.status === 'passed') {
+        await saveBaseline(resolvedPlanName, result.timestamp, cwd);
+        console.log(chalk.green(`\n  Baseline set for plan "${resolvedPlanName}"`));
+      } else {
+        console.log(chalk.red('\n  Cannot accept baseline — test failed'));
+      }
+    }
+
+    console.log('');
   } catch (error) {
     console.log(chalk.yellow(`\n  Test execution failed: ${(error as Error).message}\n`));
   }

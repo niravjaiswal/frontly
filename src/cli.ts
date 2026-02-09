@@ -73,8 +73,9 @@ program
   .command('test')
   .description('Run a test plan against the production build')
   .option('-p, --plan <name>', 'Test plan to run', 'smoke')
-  .action(async (options: { plan: string }) => {
-    const result = await testCommand(options.plan);
+  .option('--accept', 'Accept the run as baseline if it passes')
+  .action(async (options: { plan: string; accept?: boolean }) => {
+    const result = await testCommand(options.plan, options.accept);
 
     if (result) {
       process.exit(result.status === 'passed' ? 0 : 1);

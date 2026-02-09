@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Frontly is an AI-powered CLI tool for creating and editing React + Vite frontend projects. It uses Google's Gemini API to generate code through an interactive terminal chat interface built with Ink (React for CLIs).
+Frontly is an AI-powered CLI tool for creating and editing React + Vite frontend projects. It uses Google's Gemini API to generate code through an interactive terminal chat interface built with Ink (React for CLIs). It also includes a testing framework with AI-powered test discovery and deterministic test execution.
 
 ## Build & Development Commands
 
@@ -18,13 +18,16 @@ npm run clean          # Remove dist/
 
 There is no test framework configured. No unit tests exist.
 
-The CLI requires `GEMINI_API_KEY` env var to run.
+### Environment Variables
+
+- `GEMINI_API_KEY` — Required for the default chat command
+- `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` — Required for the `discover` command (uses Stagehand with Claude 3.7 Sonnet or GPT-4o)
 
 ## Architecture
 
 ### Entry Points
 
-- `src/cli.ts` — Commander.js CLI setup. Two commands: default (interactive chat) and `test` (build+serve+browser test).
+- `src/cli.ts` — Commander.js CLI setup. Three commands: default (interactive chat), `test` (deterministic test execution), and `discover` (AI-powered test plan generation).
 
 ### Module Layout
 
@@ -34,11 +37,34 @@ The CLI requires `GEMINI_API_KEY` env var to run.
 | `src/gemini/` | `client.ts` (Gemini API calls, response/plan parsing), `prompts.ts` (system prompt, prompt builders) |
 | `src/repo/` | `scanner.ts` (detect React/Vite, build file tree), `summarizer.ts` (text summary for LLM context) |
 | `src/fs/` | `writer.ts` (apply execution plans), `validator.ts` (TypeScript compiler API validation), `diff.ts` (diff generation) |
-| `src/browser/` | `browserbase.ts` (Stagehand LOCAL mode for browser artifact collection) |
-| `src/artifacts/` | `persist.ts` (save test artifacts to `.frontly/artifacts/TIMESTAMP/`) |
-| `src/commands/` | `test.ts` (build, serve via execa, collect browser artifacts) |
+| `src/browser/` | `browserbase.ts` (Stagehand LOCAL mode, headless browser sessions), `types.ts` (ConsoleMessage, UncaughtError, FrontlyBrowserArtifacts) |
+| `src/commands/` | `test.ts` (deterministic test runner), `discover.ts` (LLM-powered exploration), `shared.ts` (build/serve utilities, port config) |
+| `src/testing/` | Test infrastructure: `types.ts`, `executor.ts`, `plans.ts`, `persistence.ts`, `trace.ts`, `trace-to-plan.ts`, `selectors.ts`, `visual-assertions.ts` |
+| `src/artifacts/` | `persist.ts` (legacy artifact storage to `.frontly/artifacts/TIMESTAMP/`) |
 
-### Core Data Flow
+### Commands
+
+**`frontly`** (default) — Interactive chat for code generation. Requires `GEMINI_API_KEY`.
+
+**`frontly test --plan <name>`** — Deterministic test execution (no LLM). Loads a TestPlan from `.frontly/tests/{name}.plan.json`, builds the project, starts a preview server on port 4173, executes steps via Playwright, and persists results to `.frontly/runs/{planName}/{timestamp}/`.
+
+**`frontly discover <intent>`** — AI-powered exploration. Uses Stagehand's `observe()` and `act()` to explore the running app, captures a trace of interactions, converts the trace to a deterministic TestPlan via `trace-to-plan.ts`, and saves it to `.frontly/tests/`. Max 10 exploration steps with staleness detection.
+
+### Testing Infrastructure
+
+**Key principle:** LLM calls happen ONLY during `discover`. The `test` command is fully deterministic — it uses Playwright locators, no AI.
+
+**TestStep types:** `navigate`, `assertRoute`, `click`, `fill`
+
+**Visual assertions** (executed after test steps): `elementVisible`, `elementInViewport`, `elementNotOverlapped`, `minSize`, `noHorizontalOverflow`
+
+**Trace capture** (`src/testing/trace.ts`): Uses `page.exposeFunction` + `addInitScript` + `framenavigated` events to record clicks, fills, navigations, and route changes during discovery.
+
+**Selector priority** (`src/testing/selectors.ts`): `data-testid` > `aria-label` > `role+text` > `button/link text` > `input name` > `input placeholder` > `tagName`
+
+**Persistence:** Test results go to `.frontly/runs/{planName}/{timestamp}/` with `meta.json`, `console.json`, `errors.json`, and `visual-assertions.json`.
+
+### Core Data Flow (Chat)
 
 1. User message → `createPromptWithContext()` adds repo summary + chat history
 2. Gemini responds with either plain text or a `` ```json:plan `` `` block containing an `ExecutionPlan`
@@ -68,7 +94,8 @@ The CLI requires `GEMINI_API_KEY` env var to run.
 - Functional React components with explicit prop types (not React.FC)
 - Named exports over default exports
 - Module-level functions over classes
-- Core types defined in `src/types.ts`
+- fs-extra imported as: `import pkg from 'fs-extra'; const { ... } = pkg;`
+- Core types defined in `src/types.ts`; testing types in `src/testing/types.ts`
 - JSX uses `react-jsx` transform (no manual React import needed in JSX files)
 
 ## Validation Behavior
