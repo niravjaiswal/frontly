@@ -12,7 +12,7 @@ import React from 'react';
 import { App } from './ui/App.js';
 import { scanRepository } from './repo/scanner.js';
 import { createRepoSummary } from './repo/summarizer.js';
-import { testCommand } from './commands/test.js';
+import { testCommand, runFixLoop } from './commands/test.js';
 import { discoverCommand } from './commands/discover.js';
 import chalk from 'chalk';
 
@@ -74,13 +74,20 @@ program
   .description('Run a test plan against the production build')
   .option('-p, --plan <name>', 'Test plan to run', 'smoke')
   .option('--accept', 'Accept the run as baseline if it passes')
-  .action(async (options: { plan: string; accept?: boolean }) => {
-    const result = await testCommand(options.plan, options.accept);
-
-    if (result) {
-      process.exit(result.status === 'passed' ? 0 : 1);
+  .option('--fix', 'Attempt LLM-driven fixes when tests fail (requires GEMINI_API_KEY)')
+  .option('--max-fix-attempts <n>', 'Max auto-fix attempts (default: 3)', '3')
+  .action(async (options: { plan: string; accept?: boolean; fix?: boolean; maxFixAttempts?: string }) => {
+    if (options.fix) {
+      const maxAttempts = parseInt(options.maxFixAttempts ?? '3', 10);
+      const result = await runFixLoop(options.plan, maxAttempts);
+      process.exit(result?.status === 'passed' ? 0 : 1);
     } else {
-      process.exit(1);
+      const result = await testCommand(options.plan, options.accept);
+      if (result) {
+        process.exit(result.status === 'passed' ? 0 : 1);
+      } else {
+        process.exit(1);
+      }
     }
   });
 

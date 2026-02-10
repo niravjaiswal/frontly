@@ -10,6 +10,7 @@ import { type ExecaError } from 'execa';
 import pkg from 'fs-extra';
 const { readJson, pathExists, writeJson } = pkg;
 import { join } from 'node:path';
+import * as readline from 'node:readline';
 import chalk from 'chalk';
 import { ensureDefaultPlan, loadTestPlan } from '../testing/plans.js';
 import { executeTestPlan } from '../testing/executor.js';
@@ -18,7 +19,13 @@ import { loadBaseline, saveBaseline } from '../testing/baselines.js';
 import { compareRuns } from '../testing/compare.js';
 import type { RunComparison } from '../testing/compare.js';
 import type { TestRunResult } from '../testing/types.js';
+import type { ExecutionPlan } from '../types.js';
 import { createFailureSummary } from '../testing/failure-summary.js';
+import { attemptAutoFix } from '../testing/auto-fix.js';
+import { applyPlan, readFileIfExists } from '../fs/writer.js';
+import { requestFileContent } from '../gemini/client.js';
+import { scanRepository } from '../repo/scanner.js';
+import { createRepoSummary } from '../repo/summarizer.js';
 import { detectProject, runBuild, startPreviewServer, PREVIEW_PORT } from './shared.js';
 
 /**
@@ -43,7 +50,7 @@ export async function testCommand(planName?: string, accept?: boolean): Promise<
     plan = await loadTestPlan(resolvedPlanName, cwd);
   } catch (error) {
     console.log(chalk.red(`\n  ${(error as Error).message}\n`));
-    process.exit(1);
+    return null;
   }
 
   console.log(chalk.dim(`  Plan: ${plan.name}`));
@@ -72,7 +79,7 @@ export async function testCommand(planName?: string, accept?: boolean): Promise<
     console.log(
       chalk.dim('\n  Ensure you are in a React + Vite project directory.\n')
     );
-    process.exit(1);
+    return null;
   }
 
   console.log(chalk.green('  Detected React + Vite project'));
@@ -81,7 +88,7 @@ export async function testCommand(planName?: string, accept?: boolean): Promise<
   const buildSuccess = await runBuild(cwd);
   if (!buildSuccess) {
     console.log(chalk.red('\n  Build failed. Aborting.\n'));
-    process.exit(1);
+    return null;
   }
 
   console.log(chalk.green('\n  Build completed successfully'));
@@ -223,4 +230,207 @@ export async function testCommand(planName?: string, accept?: boolean): Promise<
 
   console.log(chalk.dim('  Server stopped.\n'));
   return result;
+}
+
+// ── Auto-fix loop ──────────────────────────────────────────────────
+
+/**
+ * Run the test command in a loop, attempting LLM-driven fixes when
+ * tests fail. Each iteration: test → diagnose → propose fix → approve
+ * → apply → re-test. The loop stops when tests pass, the user rejects
+ * a fix, the LLM can't produce a plan, or maxAttempts is reached.
+ *
+ * Requires GEMINI_API_KEY since fix proposals use the Gemini LLM.
+ */
+export async function runFixLoop(
+  planName: string,
+  maxAttempts: number,
+): Promise<TestRunResult | null> {
+  const cwd = process.cwd();
+
+  if (!process.env.GEMINI_API_KEY) {
+    console.log(chalk.red('\n  --fix requires GEMINI_API_KEY to be set.'));
+    console.log(chalk.dim('  Set it with: export GEMINI_API_KEY=your_api_key\n'));
+    return null;
+  }
+
+  let lastResult: TestRunResult | null = null;
+
+  for (let attempt = 0; attempt <= maxAttempts; attempt++) {
+    // attempt 0 = initial run, 1..maxAttempts = fix attempts
+    if (attempt > 0) {
+      console.log(chalk.cyan.bold(`\n  ── Fix attempt ${attempt}/${maxAttempts} ──────────────────────────────\n`));
+    }
+
+    lastResult = await testCommand(planName, false);
+
+    // Terminal error (plan not found, detection failed, build failed)
+    if (!lastResult) {
+      if (attempt > 0) {
+        console.log(chalk.red('  Build or execution failed after applying fix. Stopping.\n'));
+      }
+      return null;
+    }
+
+    // Tests passed
+    if (lastResult.status === 'passed') {
+      if (attempt > 0) {
+        console.log(chalk.green.bold(`\n  Fix succeeded on attempt ${attempt}!\n`));
+      }
+      return lastResult;
+    }
+
+    // Tests failed — check if we have fix attempts left
+    if (attempt >= maxAttempts) {
+      console.log(chalk.red(`\n  Max fix attempts (${maxAttempts}) reached. Stopping.\n`));
+      break;
+    }
+
+    // Generate fix proposal
+    console.log(chalk.cyan(`\n  Generating fix proposal (attempt ${attempt + 1}/${maxAttempts})...`));
+
+    const fixResult = await attemptAutoFix({
+      planName,
+      runTimestamp: lastResult.timestamp,
+      cwd,
+    });
+
+    if (fixResult.status !== 'proposed') {
+      console.log(chalk.red(`\n  Auto-fix could not produce a plan: ${fixResult.status}`));
+      if (fixResult.status === 'error') {
+        console.log(chalk.red(`  ${fixResult.message}`));
+      }
+      break;
+    }
+
+    // Display proposed plan and ask for approval
+    displayFixPlan(fixResult.plan);
+
+    const approved = await askFixApproval();
+    if (!approved) {
+      console.log(chalk.dim('\n  Fix rejected. Stopping.\n'));
+      break;
+    }
+
+    // Apply the plan
+    console.log(chalk.cyan('\n  Applying fix...'));
+    const applied = await applyFixPlan(fixResult.plan, cwd);
+    if (!applied) {
+      console.log(chalk.red('\n  Failed to apply fix. Stopping.\n'));
+      break;
+    }
+
+    // Loop back to re-run test
+  }
+
+  return lastResult;
+}
+
+/**
+ * Display a proposed ExecutionPlan in the terminal.
+ */
+function displayFixPlan(plan: ExecutionPlan): void {
+  console.log(chalk.cyan.bold('\n  Proposed Fix'));
+  console.log(chalk.dim(`  Reasoning: ${plan.reasoning}\n`));
+
+  if (plan.files_to_create.length > 0) {
+    console.log(chalk.green('  Files to create:'));
+    for (const f of plan.files_to_create) {
+      console.log(chalk.green(`    + ${f.path}`));
+      console.log(chalk.dim(`      ${f.description}`));
+    }
+  }
+
+  if (plan.files_to_modify.length > 0) {
+    console.log(chalk.yellow('  Files to modify:'));
+    for (const f of plan.files_to_modify) {
+      console.log(chalk.yellow(`    ~ ${f.path}`));
+      console.log(chalk.dim(`      ${f.description}`));
+    }
+  }
+
+  if (plan.files_to_delete.length > 0) {
+    console.log(chalk.red('  Files to delete:'));
+    for (const f of plan.files_to_delete) {
+      console.log(chalk.red(`    - ${f}`));
+    }
+  }
+}
+
+/**
+ * Prompt the user to approve or reject a proposed fix.
+ */
+function askFixApproval(): Promise<boolean> {
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+
+  return new Promise((resolve) => {
+    rl.question(chalk.cyan('\n  Apply this fix? (y/n) '), (answer) => {
+      rl.close();
+      resolve(answer.trim().toLowerCase() === 'y');
+    });
+  });
+}
+
+/**
+ * Apply an ExecutionPlan by requesting file content from Gemini
+ * and writing changes via the existing applyPlan pipeline.
+ * Returns true if changes were successfully written.
+ */
+async function applyFixPlan(
+  plan: ExecutionPlan,
+  cwd: string,
+): Promise<boolean> {
+  // Scan repo for context (needed by requestFileContent)
+  const repoContext = await scanRepository(cwd);
+  const repoSummary = createRepoSummary(repoContext);
+
+  const getFileContent = async (filePath: string): Promise<string> => {
+    const createEntry = plan.files_to_create.find(f => f.path === filePath);
+    const modifyEntry = plan.files_to_modify.find(f => f.path === filePath);
+    const description = createEntry?.description ?? modifyEntry?.description ?? 'Fix test failure';
+
+    let existingContent: string | undefined;
+    if (modifyEntry) {
+      const existing = await readFileIfExists(join(cwd, filePath));
+      existingContent = existing ?? undefined;
+    }
+
+    return requestFileContent(filePath, description, [], repoSummary, existingContent);
+  };
+
+  try {
+    const result = await applyPlan(plan, cwd, getFileContent);
+
+    if (result.hasValidationErrors) {
+      console.log(chalk.yellow('\n  Validation errors in generated code:'));
+      for (const vr of result.validationResults) {
+        if (!vr.isValid) {
+          for (const err of vr.errors) {
+            console.log(chalk.yellow(`    ${vr.filePath}:${err.line}: ${err.message}`));
+          }
+        }
+      }
+      console.log(chalk.yellow('  Fix was not applied due to syntax errors.'));
+      return false;
+    }
+
+    if (result.diffHistory.diffs.length > 0) {
+      console.log(chalk.green(`\n  Applied ${result.diffHistory.diffs.length} file change(s):`));
+      for (const diff of result.diffHistory.diffs) {
+        const op = diff.operation === 'create' ? '+' : diff.operation === 'modify' ? '~' : '-';
+        console.log(chalk.dim(`    ${op} ${diff.path}`));
+      }
+    } else {
+      console.log(chalk.yellow('\n  No file changes produced.'));
+      return false;
+    }
+
+    return true;
+  } catch (error) {
+    console.log(chalk.red(`\n  Error applying fix: ${(error as Error).message}`));
+    return false;
+  }
 }
