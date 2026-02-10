@@ -18,6 +18,7 @@ import { loadBaseline, saveBaseline } from '../testing/baselines.js';
 import { compareRuns } from '../testing/compare.js';
 import type { RunComparison } from '../testing/compare.js';
 import type { TestRunResult } from '../testing/types.js';
+import { createFailureSummary } from '../testing/failure-summary.js';
 import { detectProject, runBuild, startPreviewServer, PREVIEW_PORT } from './shared.js';
 
 /**
@@ -108,12 +109,13 @@ export async function testCommand(planName?: string, accept?: boolean): Promise<
     await persistRunResult(result, runDir);
 
     // Baseline comparison
+    let comparison: RunComparison | undefined;
     if (existingBaseline) {
       const baselineRunDir = join(cwd, '.frontly/runs', plan.name, existingBaseline.runTimestamp);
       const baselineMetaPath = join(baselineRunDir, 'meta.json');
       if (await pathExists(baselineMetaPath)) {
         const baselineResult = await readJson(baselineMetaPath) as TestRunResult;
-        const comparison: RunComparison = compareRuns(baselineResult, result);
+        comparison = compareRuns(baselineResult, result);
 
         if (comparison.status === 'regressed') {
           console.log(chalk.red(`\n  ❌ Regressions detected vs baseline (${existingBaseline.runTimestamp})`));
@@ -154,6 +156,13 @@ export async function testCommand(planName?: string, accept?: boolean): Promise<
       }
     } else {
       console.log(chalk.dim('\n  No baseline — skipping comparison'));
+    }
+
+    // Generate failure summary for downstream consumers (auto-fix loop, CI)
+    const failureSummary = createFailureSummary(plan.name, result, runDir, comparison);
+    if (failureSummary) {
+      await writeJson(join(runDir, 'failure-summary.json'), failureSummary, { spaces: 2 });
+      console.log(chalk.dim(`\n  Failure summary written to .frontly/runs/${plan.name}/${result.timestamp}/failure-summary.json`));
     }
 
     if (result.status === 'passed') {
