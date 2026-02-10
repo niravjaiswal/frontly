@@ -1,5 +1,6 @@
 import type { TestRunResult } from './types.js';
 import type { RunComparison } from './compare.js';
+import type { VisualIssue } from './visual-judge.js';
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -35,6 +36,7 @@ export type FailureSummary = {
   failedVisualAssertions: FailedVisualAssertionSummary[];
   newConsoleErrors: ConsoleErrorSummary[];
   artifacts: ArtifactPointers;
+  visualIssues?: VisualIssue[];
 };
 
 // ── Summarization ──────────────────────────────────────────────────

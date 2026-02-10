@@ -12,6 +12,7 @@ import { Input } from './Input.js';
 import { sendMessage, parseResponse } from '../gemini/client.js';
 import { applyPlan } from '../fs/writer.js';
 import { formatValidationErrors } from '../fs/validator.js';
+import { saveFeatureIntent } from '../intent/feature-intent.js';
 import type { ChatMessage, RepoContext, DiffHistory, ExecutionPlan, ValidationResult } from '../types.js';
 
 interface AppProps {
@@ -68,6 +69,22 @@ export function App({ repoContext, repoSummary, debug }: AppProps) {
 
   const handleApplyPlan = async (skipValidation: boolean = false) => {
     if (!pendingPlan) return;
+
+    // Capture the last user message as feature intent when applying from confirm mode
+    if (mode === 'confirm') {
+      const lastUserMessage = messages
+        .slice()
+        .reverse()
+        .find((msg) => msg.role === 'user');
+      if (lastUserMessage) {
+        try {
+          await saveFeatureIntent(lastUserMessage.content, 'chat', repoContext.rootPath);
+        } catch (error) {
+          // Non-blocking - log error but continue with plan application
+          console.error('Failed to save feature intent:', error);
+        }
+      }
+    }
 
     setMode('applying');
     try {

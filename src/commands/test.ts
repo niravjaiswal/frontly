@@ -21,12 +21,14 @@ import type { RunComparison } from '../testing/compare.js';
 import type { TestRunResult } from '../testing/types.js';
 import type { ExecutionPlan } from '../types.js';
 import { createFailureSummary } from '../testing/failure-summary.js';
+import { runVisualJudge } from '../testing/visual-judge.js';
 import { attemptAutoFix } from '../testing/auto-fix.js';
 import { applyPlan, readFileIfExists } from '../fs/writer.js';
 import { requestFileContent } from '../gemini/client.js';
 import { scanRepository } from '../repo/scanner.js';
 import { createRepoSummary } from '../repo/summarizer.js';
 import { detectProject, runBuild, startPreviewServer, PREVIEW_PORT } from './shared.js';
+import { loadFeatureIntent } from '../intent/feature-intent.js';
 
 /**
  * Main test command handler.
@@ -41,6 +43,15 @@ export async function testCommand(planName?: string, accept?: boolean): Promise<
 
   console.log(chalk.cyan.bold('\n  Frontly Test'));
   console.log(chalk.dim('  Build, serve, and execute test plan\n'));
+
+  // Load and display feature intent if available
+  const featureIntent = await loadFeatureIntent(cwd);
+  if (featureIntent) {
+    const truncated = featureIntent.intent.length > 120
+      ? featureIntent.intent.slice(0, 117) + '...'
+      : featureIntent.intent;
+    console.log(chalk.dim(`  Feature intent: ${truncated}`));
+  }
 
   // Step 1: Ensure default plan exists and load the requested plan
   await ensureDefaultPlan(cwd);
@@ -170,6 +181,22 @@ export async function testCommand(planName?: string, accept?: boolean): Promise<
     if (failureSummary) {
       await writeJson(join(runDir, 'failure-summary.json'), failureSummary, { spaces: 2 });
       console.log(chalk.dim(`\n  Failure summary written to .frontly/runs/${plan.name}/${result.timestamp}/failure-summary.json`));
+    }
+
+    // ── Visual judge (diagnostic-only, never blocks) ──
+    if (process.env.GEMINI_API_KEY) {
+      const judgeResult = await runVisualJudge({ cwd, runDir, testPlan: plan });
+
+      if (judgeResult && judgeResult.issues.length > 0) {
+        await writeJson(join(runDir, 'visual-issues.json'), judgeResult.issues, { spaces: 2 });
+
+        if (failureSummary) {
+          failureSummary.visualIssues = judgeResult.issues;
+          await writeJson(join(runDir, 'failure-summary.json'), failureSummary, { spaces: 2 });
+        }
+
+        console.log(chalk.dim(`  Visual judge detected ${judgeResult.issues.length} potential UI issue(s)`));
+      }
     }
 
     if (result.status === 'passed') {

@@ -14,7 +14,7 @@ let genAI: GoogleGenerativeAI | null = null;
 /**
  * Initialize the Gemini client
  */
-function getClient(): GoogleGenerativeAI {
+export function getClient(): GoogleGenerativeAI {
   if (!genAI) {
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) {
